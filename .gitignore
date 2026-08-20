@@ -1,0 +1,51 @@
+# Node.js dependencies and build output
+node_modules/
+frontend/node_modules/
+dist/
+build/
+web/
+.vite/
+
+# Python virtual environments and cache
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local model artifacts and generated training files
+QuantGrad_V5_Complete/backend/artifacts/*
+!QuantGrad_V5_Complete/backend/artifacts/.gitkeep
+*.keras
+*.h5
+*.pkl
+*.joblib
+*.npy
+*.npz
+training_report.json
+
+# Keep the trained models and their preprocessing metadata in GitHub
+!QuantGrad_V5_Complete/backend/artifacts/*.keras
+!QuantGrad_V5_Complete/backend/artifacts/*.h5
+!QuantGrad_V5_Complete/backend/artifacts/*.pkl
+!QuantGrad_V5_Complete/backend/artifacts/training_report.json
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and coverage
+*.log
+logs/
+coverage/
+htmlcov/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,74 @@
+{
+  "fetched_at": "2026-08-17T21:03:46.939485",
+  "dxy": {
+    "current": 103.0,
+    "momentum_5d": 0.0,
+    "series": []
+  },
+  "gold": {
+    "current": 2300.0,
+    "momentum_5d": 0.0,
+    "series": []
+  },
+  "crude": {
+    "current": 80.0,
+    "momentum_5d": 0.0,
+    "series": []
+  },
+  "fed": {
+    "rate": 5.33,
+    "last_change_date": "2023-07-26",
+    "source": "fallback",
+    "last_fomc": "2026-07-29",
+    "next_fomc": "2026-09-16",
+    "hours_until_next": 698.9,
+    "event_flag_24h": 0
+  },
+  "fear_greed": {
+    "current": 31,
+    "label": "Fear",
+    "7d_avg": 30.4,
+    "30d_avg": 28.7,
+    "history_30d": [
+      31,
+      34,
+      34,
+      29,
+      29,
+      27,
+      29,
+      30,
+      31,
+      30,
+      29,
+      25,
+      27,
+      25,
+      28,
+      27,
+      27,
+      25,
+      28,
+      29,
+      29,
+      30,
+      26,
+      27,
+      28,
+      31,
+      33,
+      25,
+      29,
+      28
+    ]
+  },
+  "btc_dominance": {
+    "btc_dominance_pct": 56.53,
+    "total_market_cap_usd": 2284230314998.1426,
+    "source": "CoinGecko"
+  },
+  "fed_reaction": {
+    "avg_return_1h": 0.0,
+    "avg_return_4h": 0.0
+  }
+}

@@ -1,0 +1,26 @@
+- [x] Complete the final reference review and finalize the strongest usable layouts.
+- [x] Update the QuantGrad design specification with the selected layout patterns.
+- [x] Implement the redesigned frontend and its resilient local backend data integration immediately.
+- [x] Test dashboard loading, interactions, and error states.
+- [x] Package the completed QuantGrad codebase as a zip archive.
+- [x] Research and select free public API endpoints for market, news, macro, derivative, and whale-flow data.
+- [x] Define new page layouts for Discover, Charts, Strategy Lab, Derivatives, Macro, Flow, and Integrations.
+- [x] Build free-data clients with rate-limit-aware caching and stable unavailable-data states.
+- [x] Implement the expanded dashboard pages, chart variants, and strategy builder controls.
+- [x] Test public-data failures and package the expanded QuantGrad codebase.
+- [x] Explicitly exercise public-data failure and empty-response paths in automated tests.
+- [x] Save a new checkpoint and create the final expanded QuantGrad delivery package.
+- [x] Support the intuitive /strategies URL as an alias for the Strategy Lab workspace.
+- [x] Consolidate the original Python backend and finalized V5 frontend into one local-run package.
+- [x] Verify the combined package contents and provide the complete archive.
+- [x] Diagnose and resolve the local Windows Python launcher and pip repair steps for QuantGrad startup.
+- [x] Fix the local V5 data-service startup mismatch that causes transform-response errors in market panels.
+- [x] Bypass the Windows Corepack EPERM failure with the supported no-admin `npx pnpm@10.4.1` workflow and document Corepack as an external installation limitation.
+- [x] Connect the V5 decision ledger to the local Python `/api/analyze` endpoint and display its live model state safely.
+- [x] Add a typed Node-to-local-Python model bridge with explicit offline and artifacts-missing states.
+- [x] Rebuild and repack the complete Windows local-run archive with the live decision ledger.
+- [x] Make the V5 development command cross-platform so `pnpm dev` works directly in Windows PowerShell.
+- [x] Add a Windows frontend launcher that uses the supported `npx pnpm@10.4.1` workaround without Corepack.
+- [x] Initialize the backend artifact directory and add an explicit local model-training launcher.
+- [x] Validate and package the backend artifact-workflow update for Windows.
+- [ ] Refresh and verify the complete local-run ZIP with the latest synchronized model-analytics frontend.

@@ -1,0 +1,18 @@
+.live-tag.unavailable {
+  color: #e8bd70;
+}
+
+.live-tag.unavailable i {
+  background: var(--gold);
+  box-shadow: 0 0 12px rgba(239, 184, 91, 0.75);
+}
+
+.score-orbit.connected {
+  border-color: rgba(84, 214, 171, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(84, 214, 171, 0.55), 0 0 24px rgba(84, 214, 171, 0.08);
+}
+
+.decision-score small {
+  max-width: 190px;
+  line-height: 1.45;
+}
