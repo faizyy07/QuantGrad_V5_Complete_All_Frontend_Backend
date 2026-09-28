@@ -1,0 +1,344 @@
+QuantGrad V5 — Market Intelligence Platform
+
+QuantGrad V5 is a local-first market intelligence workspace that combines public market data, interactive trading research tools, and a three-model machine-learning decision pipeline. It is designed for research, learning, and market analysis; it does not execute trades or provide financial advice.
+
+The project includes a React and TypeScript frontend, a FastAPI and Python inference backend, resilient public-data integrations, and a locally saved model-artifact workflow for repeatable demonstrations.
+
+
+Disclaimer: QuantGrad is an academic and research project. Signals, charts, analytics, and model outputs are informational only and must not be treated as investment recommendations or a guarantee of market performance.
+
+Highlights
+
+Area
+What QuantGrad Provides
+Market terminal
+A cobalt-glass terminal dashboard with watchlists, charts, market context, and a live Decision Ledger.
+Model intelligence
+A three-model pipeline that separates directional regime, market structure, and entry timing.
+Public data
+Free public-source integrations for Binance, Hyperliquid, Google News RSS, and Federal Reserve FOMC information.
+Research workspaces
+Dedicated pages for discovery, charts, strategy research, derivatives, macro events, flow monitoring, and integrations.
+Local-first operation
+Runs on Windows with Python 3.12 and Node.js, without requiring a paid market-data subscription.
+Resilience
+Empty, loading, and unavailable-data states are shown safely instead of causing the dashboard to disappear.
+
+
+
+
+System Architecture
+
+mermaid
+
+Source
+
+
+
+Core Model Pipeline
+
+QuantGrad deliberately uses three specialised models instead of relying on one unexplained prediction.
+
+Model
+Main Input
+Research Role
+TrendModel
+PCA-reduced time-series sequences
+Estimates broader directional conditions and market regime.
+StructureModel
+Local market-pattern features
+Identifies nearby structural context, such as momentum and price-behaviour conditions.
+EntryModel
+Raw feature windows
+Assesses the timing quality of a potential research entry.
+Decision Fusion
+Outputs from all three models
+Combines the evidence into a readable decision state in the frontend ledger.
+
+
+
+
+This decomposition improves interpretability: trend identifies the broader environment, structure describes local context, and entry timing evaluates whether the current moment aligns with the preceding evidence.
+
+Workspaces
+
+Workspace
+Purpose
+Terminal
+Primary market workspace with watchlist, model Decision Ledger, key market context, and stable fallback states.
+Discover
+Market movers, news context, and broader asset discovery.
+Charts
+Candlestick and alternative chart modes for market analysis.
+Strategy Lab
+Research-oriented strategy creation and evaluation workspace.
+Derivatives
+Derivatives positioning, long/short context, and related market signals.
+Macro
+Macro monitoring and Federal Reserve FOMC event context.
+Flow
+Hyperliquid-oriented flow and whale-monitoring context.
+Integrations
+Connection settings and optional workflow/webhook-oriented integration space.
+
+
+
+
+Technology Stack
+
+Layer
+Technologies
+Frontend
+React 19, TypeScript, Vite 7, Tailwind CSS 4, Wouter, React Query, tRPC
+Frontend server
+Node.js, Express-compatible TypeScript service layer, tRPC
+ML backend
+Python 3.12, FastAPI, Uvicorn, TensorFlow, scikit-learn, pandas, NumPy
+Quantum preprocessing
+Qiskit-compatible workflow with a safe local fallback capped at 12 qubits
+Data sources
+Binance public endpoints, Hyperliquid public endpoints, Google News RSS, Federal Reserve FOMC information
+Testing
+Vitest, API smoke checks, and local model status verification
+
+
+
+
+Project Structure
+
+Plain Text
+
+
+QuantGrad_V5_Complete/
+├── backend/
+│   ├── artifacts/              # Saved model files and trust manifest
+│   ├── server.py               # FastAPI inference API
+│   ├── trainer_v3.py           # Three-model training pipeline
+│   ├── feature_engine.py       # Feature preparation
+│   ├── quantum_layer.py        # Safe quantum-preprocessing fallback
+│   ├── artifact_integrity.py   # SHA-256 artifact verification
+│   └── requirements.txt        # Python dependencies
+├── frontend/
+│   ├── client/src/             # React application and user interface
+│   ├── server/                 # tRPC routes, model bridge, public data layer
+│   ├── shared/                 # Shared TypeScript types and constants
+│   └── package.json            # Frontend dependencies and scripts
+├── setup_windows.bat           # First-time Windows setup
+├── run_backend.bat             # FastAPI backend launcher
+├── run_frontend.bat            # Frontend launcher
+├── train_quick.bat             # Quick local training launcher
+└── LOCAL_RUN.md                # Expanded Windows run guide
+
+
+
+Prerequisites
+
+Install the following before first use:
+
+Requirement
+Recommended Version
+Notes
+Windows
+Windows 10 or 11
+The supplied launcher scripts target Windows PowerShell / Command Prompt.
+Python
+3.12.x
+Required for the packaged backend environment.
+Node.js
+20+ (tested with 24.14.1 )
+Used for the React and TypeScript application.
+Git
+Current release
+Required for cloning, committing, and pushing the repository.
+
+
+
+
+Quick Start on Windows
+
+1. Open the project folder
+
+Open PowerShell in the folder that contains setup_windows.bat:
+
+Plain Text
+
+
+cd "C:\path\to\QuantGrad_V5_Complete"
+
+
+
+2. Complete first-time setup
+
+Run this once to create a compatible Python 3.12 environment and install the backend dependencies:
+
+Plain Text
+
+
+.\setup_windows.bat
+
+
+
+3. Start the model backend
+
+Open a new PowerShell terminal in the project root and run:
+
+Plain Text
+
+
+.\run_backend.bat
+
+
+
+Leave this terminal running. The backend starts at:
+
+Plain Text
+
+
+http://127.0.0.1:8000
+
+
+
+To verify model availability, open another terminal and run:
+
+Plain Text
+
+
+Invoke-RestMethod http://127.0.0.1:8000/api/status
+
+
+
+When saved artifacts are available, the result should show status : ready and artifacts_ready : True.
+
+4. Start the frontend
+
+Open a second new PowerShell terminal in the same project root and run:
+
+Plain Text
+
+
+.\run_frontend.bat
+
+
+
+Then open:
+
+Plain Text
+
+
+http://localhost:3000
+
+
+
+
+If Windows blocks Corepack or a global pnpm installation, use the provided launcher. It uses npx pnpm@10.4.1, so a global pnpm installation is not required.
+
+Using Saved Models
+
+If backend/artifacts/ already contains the trained artifacts, do not retrain before launching the app. Start the backend and frontend using the commands above.
+
+The inference service requires these saved items:
+
+Plain Text
+
+
+trend_model.keras
+structure_model.keras
+entry_model.keras
+scaler.pkl
+pca.pkl
+quantum_params.pkl
+artifact_manifest.json
+
+
+
+The manifest records SHA-256 hashes for the artifact set. Before enabling the Keras Lambda deserialization required by the saved models, the backend verifies the manifest to help ensure that only explicitly trusted local artifacts are loaded.
+
+Quick Training
+
+If no model artifacts are present, or you deliberately want to create a new quick demonstration model, run:
+
+Plain Text
+
+
+.\train_quick.bat
+
+
+
+The training pipeline automatically creates backend/artifacts/, saves the trained model files, and writes an updated integrity manifest. Training quality depends on the amount and representativeness of the available historical data; a quick run is intended for functional demonstration, not production-grade evaluation.
+
+Development Commands
+
+Run these from the frontend folder when you need to validate frontend changes:
+
+Plain Text
+
+
+cd .\frontend
+npx pnpm@10.4.1 test
+npx pnpm@10.4.1 build
+
+
+
+Public Data Sources and Fallback Behaviour
+
+QuantGrad uses only publicly accessible data sources. Public endpoints can throttle requests, experience downtime, or return incomplete results. The application is designed to preserve the interface in these situations and display an informative unavailable-data state rather than failing the entire dashboard.
+
+Source
+Used For
+Binance
+Public crypto market information and price context.
+Hyperliquid
+Public market-flow and derivatives-oriented context.
+Google News RSS
+Market and industry-news context.
+Federal Reserve FOMC
+Macro-calendar and policy-event context.
+
+
+
+
+Troubleshooting
+
+Issue
+What to Check
+run_frontend.bat is not recognised
+Confirm that PowerShell is in the QuantGrad_V5_Complete folder, not its parent extraction folder.
+Dashboard says the model is offline
+Start run_backend.bat, then visit http://127.0.0.1:8000/api/status.
+Backend reports missing artifacts
+Run train_quick.bat once, or restore the required contents of backend/artifacts/.
+pnpm is not recognised
+Use run_frontend.bat; it avoids a global pnpm/Corepack setup.
+corepack enable gives EPERM
+Do not use Corepack on that Windows installation. The supplied frontend launcher uses npx pnpm@10.4.1.
+Public-data card shows unavailable
+This can be a temporary upstream public-API limitation. The rest of the dashboard should remain available.
+Keras Lambda deserialization warning
+Ensure the complete artifact set and artifact_manifest.json are present. The backend verifies trusted hashes before loading the saved artifacts.
+
+
+
+
+GitHub Repository Guidance
+
+The repository may include the saved model artifacts if they are needed for a class demonstration. Before pushing, confirm that the repository does not include secrets or unnecessary dependency folders.
+
+Plain Text
+
+
+Never commit: .env, .venv/, node_modules/, __pycache__/
+Optional: backend/artifacts/ (include only if you intentionally want to share the trained models )
+
+
+
+If any individual model file is 100 MB or larger, GitHub will reject a normal push. Use Git LFS or release assets for such files.
+
+Responsible Use
+
+QuantGrad is a decision-support and educational project. It does not connect to a brokerage, place orders, custody assets, or guarantee financial outcomes. Always validate research independently and consider appropriate risk controls before making real-world financial decisions.
+
+
+
+
+Built as an academic market-intelligence project using local machine learning, public market data, and explainable decision-support design.
+
