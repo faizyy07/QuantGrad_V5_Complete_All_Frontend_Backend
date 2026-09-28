@@ -254,36 +254,36 @@ def generate_structure_labels(struct_df):
     return labels.astype(np.int32)
 
 
-def generate_entry_labels(df, struct_df, trend_labels, prominence=400, distance=10):
-    close  = df["close"].values.astype(float)
-    high   = df["high"].values.astype(float)
-    low    = df["low"].values.astype(float)
-    mid    = (df["open"].values + close) / 2
-    grad   = np.gradient(mid)
-    n      = len(close)
+def generate_entry_labels(
+    df,
+    struct_df=None,
+    trend_labels=None,
+    prominence=400,
+    distance=10,
+    horizon=3,
+    entry_threshold=0.002,
+    strong_threshold=0.005,
+):
+    """Label entries by next-close-to-exit return over a fixed holding horizon."""
+    close = df["close"].to_numpy(dtype=float)
+    labels = np.full(len(close), 2, dtype=np.int32)
+    if len(close) <= horizon + 1 or strong_threshold <= entry_threshold:
+        return labels
 
-    adx = compute_adx_simple(high, low, close)
-    struct_bull = ((struct_df["mss_bullish"].values + struct_df["sweep_bull"].values +
-                    struct_df["ob_bull_active"].values) > 0)
-    struct_bear = ((struct_df["mss_bearish"].values + struct_df["sweep_bear"].values +
-                    struct_df["ob_bear_active"].values) > 0)
-
-    peaks,   _ = find_peaks( mid, prominence=prominence, distance=distance)
-    troughs, _ = find_peaks(-mid, prominence=prominence, distance=distance)
-    labels = np.full(n, 2, dtype=np.int32)
-
-    for idx in troughs:
-        if idx >= n-1 or grad[idx+1] <= 0: continue
-        if trend_labels[idx] == 0:
-            if adx[idx] > 25 and struct_bull[idx]: labels[idx] = 0
-            elif adx[idx] > 15:                    labels[idx] = 1
-
-    for idx in peaks:
-        if idx >= n-1 or grad[idx+1] >= 0: continue
-        if trend_labels[idx] == 1:
-            if adx[idx] > 25 and struct_bear[idx]: labels[idx] = 4
-            elif adx[idx] > 15:                    labels[idx] = 3
-
+    entry_prices = close[1:-horizon]
+    exit_prices = close[horizon + 1:]
+    forward_returns = exit_prices / np.maximum(entry_prices, 1e-12) - 1.0
+    usable = len(forward_returns)
+    labels[:usable] = np.where(
+        forward_returns >= strong_threshold, 0,
+        np.where(
+            forward_returns >= entry_threshold, 1,
+            np.where(
+                forward_returns <= -strong_threshold, 4,
+                np.where(forward_returns <= -entry_threshold, 3, 2),
+            ),
+        ),
+    ).astype(np.int32)
     return labels
 
 

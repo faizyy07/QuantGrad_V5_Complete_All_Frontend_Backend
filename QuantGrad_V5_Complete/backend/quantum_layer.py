@@ -178,6 +178,110 @@ class QuantumFeatureMap:
         return q
 
 
+class QuantumMarketClassifier:
+    """Small supervised variational classifier using a Qiskit statevector."""
+
+    def __init__(self, n_qubits=4, n_classes=3, seed=42):
+        self.n_qubits = n_qubits
+        self.n_classes = n_classes
+        self.seed = seed
+        self.scaler = StandardScaler()
+        self.decomposer = PCA(n_components=n_qubits)
+        self.trainable_params = np.random.default_rng(seed).uniform(
+            -0.1, 0.1, size=n_qubits * 2
+        )
+        self.is_fitted = False
+
+    def _class_probabilities(self, encoded_features, parameters):
+        if not QISKIT_AVAILABLE:
+            raise RuntimeError("Qiskit is required to train the quantum classifier")
+        circuit = QuantumCircuit(self.n_qubits)
+        for qubit, value in enumerate(encoded_features):
+            circuit.ry(float(np.pi * np.tanh(value)), qubit)
+        for qubit in range(self.n_qubits - 1):
+            circuit.cx(qubit, qubit + 1)
+        for layer in range(2):
+            for qubit in range(self.n_qubits):
+                circuit.ry(float(parameters[layer * self.n_qubits + qubit]), qubit)
+            for qubit in range(self.n_qubits):
+                circuit.cx(qubit, (qubit + 1) % self.n_qubits)
+
+        state_probabilities = Statevector(circuit).probabilities()
+        class_probabilities = np.zeros(self.n_classes, dtype=np.float64)
+        np.add.at(
+            class_probabilities,
+            np.arange(len(state_probabilities)) % self.n_classes,
+            state_probabilities,
+        )
+        return class_probabilities / max(class_probabilities.sum(), 1e-12)
+
+    def fit(self, X, y, epochs=4, batch_size=16, learning_rate=0.08, max_samples=96):
+        if not QISKIT_AVAILABLE:
+            raise RuntimeError("Qiskit is required to train the quantum classifier")
+        X = np.asarray(X, dtype=np.float64)
+        y = np.asarray(y, dtype=np.int32).reshape(-1)
+        if X.ndim != 2 or len(X) != len(y) or X.shape[1] < self.n_qubits:
+            raise ValueError("Quantum classifier expects aligned 2D features and labels")
+        if len(X) < self.n_qubits or np.any((y < 0) | (y >= self.n_classes)):
+            raise ValueError("Quantum classifier received too few samples or invalid labels")
+
+        X_scaled = self.scaler.fit_transform(X)
+        X_encoded = self.decomposer.fit_transform(X_scaled)
+        rng = np.random.default_rng(self.seed)
+        per_class = max(1, max_samples // max(1, len(np.unique(y))))
+        selected = []
+        for class_id in np.unique(y):
+            class_indices = np.flatnonzero(y == class_id)
+            if len(class_indices) > per_class:
+                positions = np.linspace(0, len(class_indices) - 1, per_class, dtype=int)
+                class_indices = class_indices[positions]
+            selected.extend(class_indices.tolist())
+        selected = np.asarray(selected, dtype=np.int32)
+        X_encoded, y = X_encoded[selected], y[selected]
+
+        for _ in range(epochs):
+            order = rng.permutation(len(y))
+            for start in range(0, len(order), batch_size):
+                batch = order[start:start + batch_size]
+                gradient = np.zeros_like(self.trainable_params)
+                for sample_index in batch:
+                    features = X_encoded[sample_index]
+                    target = y[sample_index]
+                    base = self._class_probabilities(features, self.trainable_params)
+                    target_probability = max(base[target], 1e-8)
+                    for parameter_index in range(len(self.trainable_params)):
+                        plus = self.trainable_params.copy()
+                        minus = self.trainable_params.copy()
+                        plus[parameter_index] += np.pi / 2
+                        minus[parameter_index] -= np.pi / 2
+                        probability_gradient = 0.5 * (
+                            self._class_probabilities(features, plus)[target]
+                            - self._class_probabilities(features, minus)[target]
+                        )
+                        gradient[parameter_index] -= probability_gradient / target_probability
+                self.trainable_params -= learning_rate * gradient / len(batch)
+
+        self.training_samples = int(len(y))
+        self.trained_epochs = int(epochs)
+        self.is_fitted = True
+        return self
+
+    def predict_proba(self, X):
+        if not self.is_fitted:
+            raise RuntimeError("Quantum classifier has not been fitted")
+        X = np.asarray(X, dtype=np.float64)
+        X_encoded = self.decomposer.transform(self.scaler.transform(X))
+        return np.asarray([
+            self._class_probabilities(row, self.trainable_params)
+            for row in X_encoded
+        ])
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+
+
 class QuantumPreprocessor:
     def __init__(self):
         self.scaler     = StandardScaler()

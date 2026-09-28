@@ -111,7 +111,7 @@ def _feature_streams(features: pd.DataFrame, points: int = 32) -> list[dict[str,
     return output
 
 
-def _backtest_stats(predictions: np.ndarray, prices: np.ndarray, hold_bars: int = 3) -> dict[str, Any]:
+def _backtest_stats(predictions: np.ndarray, prices: np.ndarray, hold_bars: int = 3, fee_rate: float = 0.0005, slippage_rate: float = 0.0002) -> dict[str, Any]:
     """Exact dashboard rolling strategy simulation, returned as JSON-safe data."""
     equity = [1.0]
     wins = losses = 0
@@ -119,18 +119,24 @@ def _backtest_stats(predictions: np.ndarray, prices: np.ndarray, hold_bars: int 
     peak = 1.0
     max_drawdown = 0.0
     trade_returns: list[float] = []
+    round_trip_cost = 2 * (fee_rate + slippage_rate)
+    actual_directions: list[int] = []
+    predicted_directions: list[int] = []
+    next_entry_index = 0
     for index in range(len(predictions) - hold_bars - 1):
-        if predictions[index] == 2:
-            equity.append(equity[-1])
-            continue
         if index + 1 + hold_bars >= len(prices):
             break
         entry, exit_ = prices[index + 1], prices[index + 1 + hold_bars]
         if entry == 0:
             continue
-        pnl = float((exit_ - entry) / entry)
-        if predictions[index] in (3, 4):
-            pnl = -pnl
+        market_return = float((exit_ - entry) / entry)
+        predicted = int(predictions[index])
+        actual_directions.append(0 if market_return < -0.001 else 2 if market_return > 0.001 else 1)
+        predicted_directions.append(0 if predicted in (3, 4) else 2 if predicted in (0, 1) else 1)
+        if predicted == 2 or index < next_entry_index:
+            equity.append(equity[-1])
+            continue
+        pnl = (-market_return if predicted in (3, 4) else market_return) - round_trip_cost
         trade_returns.append(pnl)
         equity.append(equity[-1] * (1 + pnl))
         if pnl > 0:
@@ -141,7 +147,24 @@ def _backtest_stats(predictions: np.ndarray, prices: np.ndarray, hold_bars: int 
             losses += 1
         peak = max(peak, equity[-1])
         max_drawdown = max(max_drawdown, (peak - equity[-1]) / peak)
+        next_entry_index = index + hold_bars
     total = wins + losses
+    confusion = np.zeros((3, 3), dtype=np.int64)
+    for actual, predicted in zip(actual_directions, predicted_directions):
+        confusion[actual, predicted] += 1
+    class_precision = np.divide(
+        np.diag(confusion), confusion.sum(axis=0),
+        out=np.zeros(3, dtype=float), where=confusion.sum(axis=0) > 0,
+    )
+    class_recall = np.divide(
+        np.diag(confusion), confusion.sum(axis=1),
+        out=np.zeros(3, dtype=float), where=confusion.sum(axis=1) > 0,
+    )
+    class_f1 = np.divide(
+        2 * class_precision * class_recall, class_precision + class_recall,
+        out=np.zeros(3, dtype=float), where=(class_precision + class_recall) > 0,
+    )
+    present_classes = confusion.sum(axis=1) > 0
     return {
         "profit_factor": gross_profit / (gross_loss + 1e-9),
         "win_rate": wins / (total + 1e-9),
@@ -150,6 +173,18 @@ def _backtest_stats(predictions: np.ndarray, prices: np.ndarray, hold_bars: int 
         "equity_curve": equity,
         "trade_returns": trade_returns,
         "net_return": equity[-1] - 1 if equity else 0.0,
+        "average_trade_return": float(np.mean(trade_returns)) if trade_returns else 0.0,
+        "average_win": gross_profit / wins if wins else 0.0,
+        "average_loss": gross_loss / losses if losses else 0.0,
+        "fee_rate_per_side": fee_rate,
+        "slippage_rate_per_side": slippage_rate,
+        "round_trip_cost": round_trip_cost,
+        "evaluated_windows": int(len(actual_directions)),
+        "directional_accuracy": float(np.mean(np.asarray(actual_directions) == np.asarray(predicted_directions))) if actual_directions else 0.0,
+        "precision_macro": float(class_precision.mean()),
+        "recall_macro": float(class_recall.mean()),
+        "f1_macro": float(class_f1.mean()),
+        "balanced_accuracy": float(class_recall[present_classes].mean()) if np.any(present_classes) else 0.0,
     }
 
 
@@ -186,9 +221,9 @@ def _transform_windows_pca(quantum: Any, windows: np.ndarray) -> np.ndarray:
     return transformed.reshape(samples, window, -1).astype(np.float32)
 
 
-def _run_inference(trend_model: Any, structure_model: Any, entry_model: Any, quantum: Any, candle_frame: pd.DataFrame, macro: dict[str, Any], order_book: dict[str, Any]) -> tuple[dict[str, Any], pd.DataFrame]:
+def _run_inference(trend_model: Any, structure_model: Any, entry_model: Any, quantum: Any, candle_frame: pd.DataFrame, macro: dict[str, Any], order_book: dict[str, Any], min_direction_confidence: float = 0.0) -> tuple[dict[str, Any], pd.DataFrame]:
     from feature_engine import FEATURE_DIM, WINDOW_SIZE, build_feature_matrix
-    from trainer_v3 import fusion_decision
+    from trainer_v3 import decode_entry_predictions, fusion_decision
 
     features, _ = build_feature_matrix(candle_frame, macro, order_book)
     if len(features) < WINDOW_SIZE:
@@ -199,13 +234,14 @@ def _run_inference(trend_model: Any, structure_model: Any, entry_model: Any, qua
     structure_probs = structure_model.predict(transformed_window, verbose=0)[0]
     entry_probs = entry_model.predict([raw_window, trend_probs.reshape(1, -1), structure_probs.reshape(1, -1)], verbose=0)[0]
     adx_value = float(features["adx"].iloc[-1]) if "adx" in features.columns else 0.20
-    result = fusion_decision(entry_probs, trend_probs, structure_probs, adx_value, order_book.get("spread", 0))
+    result = fusion_decision(entry_probs, trend_probs, structure_probs, adx_value, order_book.get("spread", 0), min_direction_confidence)
     result.update({"entry_probs": entry_probs, "trend_probs": trend_probs, "struct_probs": structure_probs})
     return result, features
 
 
-def _run_rolling_inference(trend_model: Any, structure_model: Any, entry_model: Any, quantum: Any, candle_frame: pd.DataFrame, macro: dict[str, Any], order_book: dict[str, Any], windows: int) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+def _run_rolling_inference(trend_model: Any, structure_model: Any, entry_model: Any, quantum: Any, candle_frame: pd.DataFrame, macro: dict[str, Any], order_book: dict[str, Any], windows: int, min_direction_confidence: float = 0.0) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     from feature_engine import WINDOW_SIZE, build_feature_matrix, build_windows
+    from trainer_v3 import decode_entry_predictions
 
     features, _ = build_feature_matrix(candle_frame, macro, order_book)
     if len(features) < WINDOW_SIZE + 10:
@@ -217,7 +253,7 @@ def _run_rolling_inference(trend_model: Any, structure_model: Any, entry_model: 
     trend_probs = trend_model.predict(transformed_windows, verbose=0, batch_size=512)
     structure_probs = structure_model.predict(transformed_windows, verbose=0, batch_size=512)
     entry_probs = entry_model.predict([raw_windows, trend_probs, structure_probs], verbose=0, batch_size=512)
-    return np.argmax(entry_probs, axis=1), entry_probs, features
+    return decode_entry_predictions(entry_probs, min_direction_confidence), entry_probs, features
 
 
 @app.get("/api/status")
@@ -253,10 +289,32 @@ def analyze(
         candles = fetch_binance_klines(symbol, "1h", total_bars=bars)
         order_book = fetch_order_book(symbol)
         macro = fetch_all_macro(save=True) if is_cache_stale(24) else load_macro_cache()
-        result, features = _run_inference(trend, structure, entry, quantum, candles, macro, order_book)
-        predictions, rolling_probs, rolling_features = _run_rolling_inference(trend, structure, entry, quantum, candles, macro, order_book, windows)
-        prices = candles["close"].values[-len(predictions) - 4:] if len(predictions) else np.array([])
-        backtest = _backtest_stats(predictions, prices) if len(predictions) else _backtest_stats(np.array([]), np.array([]))
+        report_symbol = str(report.get("comparison_symbol") or report.get("symbol") or symbol).upper()
+        if report_symbol != symbol:
+            report = {
+                **report,
+                "holdout_backtest": None,
+                "strategy_results": [],
+                "walk_forward": None,
+                "model_comparison": None,
+            }
+        min_direction_confidence = float(report.get("entry_confidence_threshold", 0.0))
+        result, features = _run_inference(trend, structure, entry, quantum, candles, macro, order_book, min_direction_confidence)
+        predictions, rolling_probs, rolling_features = _run_rolling_inference(trend, structure, entry, quantum, candles, macro, order_book, windows, min_direction_confidence)
+        from feature_engine import WINDOW_SIZE
+        price_index = rolling_features.index[WINDOW_SIZE:]
+        if len(predictions):
+            price_index = price_index[-len(predictions):]
+            prices = candles.reindex(price_index)["close"].to_numpy(dtype=float)
+        else:
+            prices = np.array([])
+        rolling_backtest = _backtest_stats(predictions, prices) if len(predictions) else _backtest_stats(np.array([]), np.array([]))
+        holdout_backtest = report.get("holdout_backtest")
+        backtest = dict(holdout_backtest) if isinstance(holdout_backtest, dict) else rolling_backtest
+        backtest.setdefault(
+            "evaluation",
+            "chronological_holdout" if isinstance(holdout_backtest, dict) else "rolling_live",
+        )
         return _native({
             "symbol": symbol,
             "interval": "1h",

@@ -9,7 +9,8 @@ import {
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { formatModelDetail, getDetailBarMagnitude, modelScorePercent } from "@/lib/modelPresentation";
-import type { ModelDetail } from "@shared/modelAnalysis";
+import type { BacktestMetrics, ModelComparison, ModelDetail, StrategyResult, WalkForwardResults } from "@shared/modelAnalysis";
+import { Bar as RechartsBar, BarChart as RechartsBarChart, CartesianGrid, Legend, Line as RechartsLine, LineChart as RechartsLineChart, ReferenceLine, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 import "@/model-analytics.css";
 
 type ChartMode = "candles" | "line" | "heikin";
@@ -24,8 +25,16 @@ type CandleFeed = { symbol: string; interval: Interval; candles: Candle[]; servi
 type Derivatives = { symbol: string; markPrice: number; fundingRate: number; nextFundingTime: number; openInterest: number; ratio: Array<{ time: number; longShortRatio: number; longAccount: number; shortAccount: number }>; service: Service };
 type Hyperliquid = { rows: Array<{ coin: string; markPrice: number; openInterest: number; dayVolume: number; funding: number }>; service: Service };
 type Macro = { events: Array<{ date: string; endDate?: string; title: string; impact: string; note: string }>; service: Service };
-type ModelAnalysis = { state: "ready" | "artifacts_missing" | "unavailable" | "analysis_failed"; available: boolean; source: string; checkedAt: number; reason?: string; missingArtifacts: string[]; symbol?: string; signalLabel?: string; confidence?: number; riskLevel?: string; trend?: string; structure?: string; adx?: number; modelDetails: ModelDetail[] };
+type ModelAnalysis = { state: "ready" | "artifacts_missing" | "unavailable" | "analysis_failed"; available: boolean; source: string; checkedAt: number; reason?: string; missingArtifacts: string[]; symbol?: string; signalLabel?: string; confidence?: number; riskLevel?: string; trend?: string; structure?: string; adx?: number; modelDetails: ModelDetail[]; backtest?: BacktestMetrics; modelComparison?: ModelComparison; strategyResults?: StrategyResult[]; walkForward?: WalkForwardResults; macroFallbackInputs?: string[] };
 type PublicQuery<T> = { data?: T; isLoading: boolean; isFetching?: boolean; error?: unknown; refetch?: () => Promise<unknown> };
+
+const STRATEGY_COLORS: Record<string, string> = {
+  neural_ensemble: "#6f9cff",
+  qiskit_vqc: "#bb8df5",
+  random_forest: "#42c5a1",
+  hist_gradient_boosting: "#f0b45e",
+  tree_stacker: "#ef7d92",
+};
 
 const NAV: Array<{ key: NavKey; label: string; icon: typeof Activity; eyebrow: string }> = [
   { key: "terminal", label: "Terminal", icon: ChartNoAxesCombined, eyebrow: "Decision workspace" },
@@ -52,6 +61,14 @@ function percent(value?: number, fraction = false) {
   if (!Number.isFinite(value)) return "—";
   const number = fraction ? (value ?? 0) * 100 : value ?? 0;
   return `${number >= 0 ? "+" : ""}${number.toFixed(2)}%`;
+}
+function rate(value?: number) {
+  if (!Number.isFinite(value)) return "—";
+  return `${((value ?? 0) * 100).toFixed(2)}%`;
+}
+function profitFactor(value?: number) {
+  if (!Number.isFinite(value)) return "—";
+  return (value ?? 0) > 1e6 ? "∞" : (value ?? 0).toFixed(2);
 }
 function errorText(error: unknown) {
   return error instanceof Error ? error.message.replace(/^TRPCClientError:\s*/, "") : "The public data source is unavailable. Try again shortly.";
@@ -160,8 +177,121 @@ function TerminalPage({ symbol, setSymbol, overview, movers, model, chartMode, s
     <section className="hero-line"><div><span className="eyebrow"><Sparkles size={13}/>Quantitative decision cockpit</span><h2>See structure <i>before it resolves.</i></h2><p>Live public-market context, transparent source labels, and a durable workspace that remains useful when a feed goes offline.</p></div><div className="hero-action"><span>Selected market</span><SymbolControl symbol={symbol} setSymbol={setSymbol}/><button onClick={onOpenCharts}>Open chart studio <ChevronRight size={15}/></button></div></section>
     <QueryState loading={overview.isLoading} error={overview.error} label="Connecting to public spot market data"><><section className="metric-row"><MetricCard label="Spot price" value={currency(data?.price)} trend={percent(data?.changePct)} tone={(data?.changePct ?? 0) >= 0 ? "green" : "red"}/><MetricCard label="24h quote volume" value={compact(data?.quoteVolume)} note="Public exchange volume"/><MetricCard label="24h range" value={`${currency(data?.low)} — ${currency(data?.high)}`} note="Session high / low" tone="gold"/><MetricCard label="Signal posture" value="Observe" note="No autonomous execution" tone="blue"/></section><Notice>{data?.service.source} · refreshed {data?.service.refreshedAt ? new Date(data.service.refreshedAt).toLocaleTimeString() : "—"}</Notice></></QueryState>
     <section className="terminal-layout"><article className="panel chart-panel"><div className="panel-head"><div><span className="mini">Market canvas</span><h3>{title(symbol)} <em>spot</em></h3></div><div className="segment" role="group" aria-label="Chart rendering type">{(["candles", "line", "heikin"] as ChartMode[]).map(mode => <button className={chartMode === mode ? "active" : ""} onClick={() => setChartMode(mode)} key={mode}>{mode === "heikin" ? "Heikin-Ashi" : mode[0].toUpperCase() + mode.slice(1)}</button>)}</div></div><ChartSurface candles={candles} mode={chartMode}/><div className="chart-footer"><span><i className="green-dot"/>Spot data via public API</span><button onClick={onOpenCharts}>Indicators & overlays <SlidersHorizontal size={14}/></button></div></article><ModelDecisionLedger analysis={model.data} loading={model.isLoading} onOpenCharts={onOpenCharts}/></section>
+    <ModelPerformance analysis={model.data} loading={model.isLoading}/>
     <section className="lower-grid"><article className="panel movers-panel"><div className="panel-head"><div><span className="mini">Cross-market pulse</span><h3>Market movers</h3></div><span className="source-chip">public</span></div><QueryState loading={movers.isLoading} error={movers.error}><div className="mover-list">{movers.data?.rows.slice(0, 6).map(item => <button key={item.symbol} onClick={() => setSymbol(item.symbol)}><span className="token-icon">{item.symbol.slice(0, 1)}</span><span><b>{title(item.symbol)}</b><small>{compact(item.quoteVolume)} vol.</small></span><strong>{currency(item.price)}</strong><em className={item.changePct >= 0 ? "up" : "down"}>{percent(item.changePct)}</em></button>)}</div></QueryState></article><article className="panel source-panel"><div className="panel-head"><div><span className="mini">Methods note</span><h3>What this page is</h3></div><BookOpen size={17}/></div><p>QuantGrad surfaces market information from public sources. It does not represent a broker, exchange, investment adviser, or an automated trading service.</p><div className="method-grid"><span><CircleCheck size={14}/>Source-labelled</span><span><CircleCheck size={14}/>Failure-tolerant</span><span><CircleCheck size={14}/>Manual decisions</span></div></article></section>
   </>;
+}
+
+function ModelPerformance({ analysis, loading }: { analysis?: ModelAnalysis; loading: boolean }) {
+  const backtest = analysis?.backtest;
+  const comparison = analysis?.modelComparison;
+  const strategyResults = analysis?.strategyResults ?? [];
+  const walkForward = analysis?.walkForward;
+  const [selectedStrategyId, setSelectedStrategyId] = useState(strategyResults[0]?.modelId ?? "");
+  const selectedStrategy = strategyResults.find(result => result.modelId === selectedStrategyId) ?? strategyResults[0];
+  const holdoutChartData = strategyResults.map(result => ({
+    model: result.label,
+    netReturn: result.backtest.netReturn * 100,
+    drawdown: -result.backtest.maxDrawdown * 100,
+  }));
+  const walkForwardChartData: Array<Record<string, string | number>> = (walkForward?.folds ?? []).map(fold => {
+    const row: Record<string, string | number> = { fold: `Fold ${fold.fold}` };
+    fold.results.forEach(result => { row[result.modelId] = (result.backtest.netReturn ?? 0) * 100; });
+    return row;
+  });
+  const metricRows = comparison ? [
+    { label: "Qiskit · 4 qubits", metrics: comparison.quantum },
+    { label: "Three-model ensemble", metrics: comparison.ensemble },
+  ] : [];
+  return <section className="panel model-performance">
+    <div className="panel-head"><div><span className="mini">Out-of-sample evidence</span><h3>Backtest & model comparison</h3></div><span className="source-chip">Local model</span></div>
+    {loading ? <div className="data-state"><RefreshCw className="spin" size={16}/><span>Loading model performance</span></div> : analysis?.state !== "ready" ? <EmptyPanel copy={analysis?.reason ?? "Run the local Python model to generate backtest results."}/> : <>
+      {strategyResults.length && selectedStrategy ? <>
+        <div className="selected-strategy-head">
+          <div><span className="mini">Selected strategy · {selectedStrategy.backtest.evaluation ?? "holdout"}</span><h4>{selectedStrategy.label}</h4></div>
+          <label>Model<select aria-label="Select model summary and trade log" value={selectedStrategy.modelId} onChange={event => setSelectedStrategyId(event.target.value)}>{strategyResults.map(result => <option key={result.modelId} value={result.modelId}>{result.label}</option>)}</select></label>
+        </div>
+        <div className="selected-strategy-metrics">
+          <MetricCard label="Net return" value={percent(selectedStrategy.backtest.netReturn, true)} note="After assumed costs" tone={selectedStrategy.backtest.netReturn >= 0 ? "green" : "red"}/>
+          <MetricCard label="Profit factor" value={profitFactor(selectedStrategy.backtest.profitFactor)} note="Net winners / net losers" tone="gold"/>
+          <MetricCard label="Max drawdown" value={percent(-selectedStrategy.backtest.maxDrawdown, true)} note="Peak-to-trough" tone="red"/>
+          <MetricCard label="Trades" value={selectedStrategy.backtest.totalTrades.toLocaleString()} note={`${rate(selectedStrategy.backtest.winRate)} win rate`} tone="blue"/>
+        </div>
+        <Notice>{selectedStrategy.backtest.exitPolicy ?? "Variable ATR stop/target and model exits."} Assumes {(selectedStrategy.backtest.feeRatePerSide * 100).toFixed(2)}% fee and {(selectedStrategy.backtest.slippageRatePerSide * 100).toFixed(2)}% slippage per side; excludes funding.</Notice>
+      </> : backtest ? <>
+        <div className="performance-kicker"><ChartNoAxesCombined size={14}/>Legacy backtest summary</div>
+        <div className="selected-strategy-metrics">
+          <MetricCard label="Net return" value={backtest.totalTrades ? percent(backtest.netReturn, true) : "—"} note="After assumed costs" tone={backtest.netReturn >= 0 ? "green" : "red"}/>
+          <MetricCard label="Profit factor" value={backtest.totalTrades ? profitFactor(backtest.profitFactor) : "—"} note="Gross profit / gross loss" tone="gold"/>
+          <MetricCard label="Max drawdown" value={backtest.totalTrades ? percent(-backtest.maxDrawdown, true) : "—"} note="Peak-to-trough" tone="red"/>
+          <MetricCard label="Trades" value={backtest.totalTrades.toLocaleString()} note={`${rate(backtest.winRate)} win rate`} tone="blue"/>
+        </div>
+      </> : <EmptyPanel copy="No holdout results were returned for this run."/>}
+      {comparison ? <div className="comparison-block">
+        <div className="comparison-title"><div><span className="mini">Same chronological holdout</span><h4>Quantum vs ensemble classification</h4></div><span>{comparison.trainSamples.toLocaleString()} train · {comparison.testSamples.toLocaleString()} test</span></div>
+        <div className="comparison-scroll"><div className="comparison-table" role="table" aria-label="Quantum classifier and ensemble holdout metrics">
+          <div className="comparison-row comparison-labels" role="row"><span role="columnheader">Model</span><span role="columnheader">Accuracy</span><span role="columnheader">Macro F1</span><span role="columnheader">Balanced acc.</span><span role="columnheader">Precision</span><span role="columnheader">Recall</span><span role="columnheader">Log loss</span></div>
+          {metricRows.map(row => <div className="comparison-row" role="row" key={row.label}><b role="rowheader">{row.label}</b><span>{rate(row.metrics.accuracy)}</span><span>{rate(row.metrics.f1Macro)}</span><span>{rate(row.metrics.balancedAccuracy)}</span><span>{rate(row.metrics.precisionMacro)}</span><span>{rate(row.metrics.recallMacro)}</span><span>{row.metrics.logLoss.toFixed(3)}</span></div>)}
+        </div></div>
+        <p className="comparison-note">Target: {comparison.targetDefinition}. Classification scores are not trading returns. Quantum fit: {comparison.quantum.trainedEpochs ?? "—"} epochs on {comparison.quantum.simulator ?? "Qiskit Statevector"}.</p>
+      </div> : <div className="comparison-empty"><CircleDotDashed size={15}/><span>Quantum comparison not recorded yet. Run <code>python trainer_v3.py --bars 800 --quick --compare-existing</code> in the backend folder.</span></div>}
+      {analysis?.macroFallbackInputs?.length ? <Notice>Macro inputs using fallbacks: {analysis.macroFallbackInputs.join(", ")}. Treat these experiment results as provisional until those feeds are available.</Notice> : null}
+      {strategyResults.length ? <div className="strategy-comparison">
+        <div className="comparison-title"><div><span className="mini">Same barriers, costs & holdout</span><h4>Trading performance by model</h4></div><span>Validation-selected confidence gates</span></div>
+        <div className="comparison-scroll"><div className="strategy-table" role="table" aria-label="Variable-exit trading results by model">
+            <div className="strategy-row strategy-labels" role="row"><span role="columnheader">Model</span><span role="columnheader">Net return</span><span role="columnheader">Profit factor</span><span role="columnheader">Max DD</span><span role="columnheader">Win rate</span><span role="columnheader">Trades</span><span role="columnheader">Avg hold</span><span role="columnheader">Direction acc.</span><span role="columnheader">Macro F1</span></div>
+            {strategyResults.map(result => <div className="strategy-row" role="row" key={result.modelId}><b role="rowheader">{result.label}</b><span className={result.backtest.netReturn >= 0 ? "up" : "down"}>{percent(result.backtest.netReturn, true)}</span><span>{result.backtest.profitFactor.toFixed(2)}</span><span>{percent(-result.backtest.maxDrawdown, true)}</span><span>{rate(result.backtest.winRate)}</span><span>{result.backtest.totalTrades.toLocaleString()}</span><span>{result.backtest.averageHoldingBars?.toFixed(1) ?? "—"} bars</span><span>{rate(result.classification.accuracy)}</span><span>{rate(result.classification.f1Macro)}</span></div>)}
+        </div></div>
+        <div className="strategy-charts">
+          <section className="strategy-chart-block">
+            <div className="chart-block-head"><div><span className="mini">Holdout comparison</span><h5>Return and drawdown</h5></div><span>Net % · after costs</span></div>
+            <div className="strategy-chart-frame"><ResponsiveContainer width="100%" height="100%"><RechartsBarChart data={holdoutChartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 10 }}>
+              <CartesianGrid stroke="#24334c" strokeDasharray="3 5" horizontal={false}/>
+              <XAxis type="number" tickFormatter={value => `${value}%`} tick={{ fill: "#8696ae", fontSize: 9 }} axisLine={{ stroke: "#33445f" }} tickLine={false}/>
+              <YAxis type="category" dataKey="model" width={164} tick={{ fill: "#b8c7dd", fontSize: 9 }} axisLine={false} tickLine={false}/>
+              <ReferenceLine x={0} stroke="#8291a8" strokeDasharray="3 3"/>
+              <RechartsTooltip formatter={value => `${Number(value).toFixed(2)}%`} contentStyle={{ background: "#0b1423", border: "1px solid #293b5b", borderRadius: 0, color: "#dbe6fa", fontSize: 10 }}/>
+              <Legend wrapperStyle={{ color: "#9baac0", fontSize: 9 }}/>
+              <RechartsBar dataKey="netReturn" name="Net return" fill="#48c6a4" radius={[0, 3, 3, 0]}/>
+              <RechartsBar dataKey="drawdown" name="Max drawdown" fill="#ed7888" radius={[0, 3, 3, 0]}/>
+            </RechartsBarChart></ResponsiveContainer></div>
+          </section>
+          {walkForwardChartData.length ? <section className="strategy-chart-block">
+            <div className="chart-block-head"><div><span className="mini">Unseen periods</span><h5>Walk-forward net return</h5></div><span>Each fold is a later time period</span></div>
+            <div className="strategy-chart-frame"><ResponsiveContainer width="100%" height="100%"><RechartsLineChart data={walkForwardChartData} margin={{ top: 8, right: 15, bottom: 3, left: 1 }}>
+              <CartesianGrid stroke="#24334c" strokeDasharray="3 5" vertical={false}/>
+              <XAxis dataKey="fold" tick={{ fill: "#8696ae", fontSize: 9 }} axisLine={{ stroke: "#33445f" }} tickLine={false}/>
+              <YAxis tickFormatter={value => `${value}%`} tick={{ fill: "#8696ae", fontSize: 9 }} axisLine={false} tickLine={false}/>
+              <ReferenceLine y={0} stroke="#8291a8" strokeDasharray="3 3"/>
+              <RechartsTooltip formatter={value => `${Number(value).toFixed(2)}%`} contentStyle={{ background: "#0b1423", border: "1px solid #293b5b", borderRadius: 0, color: "#dbe6fa", fontSize: 10 }}/>
+              <Legend wrapperStyle={{ color: "#9baac0", fontSize: 9 }}/>
+              {(walkForward?.aggregate ?? []).map(model => <RechartsLine key={model.modelId} type="monotone" dataKey={model.modelId} name={strategyResults.find(result => result.modelId === model.modelId)?.label ?? model.modelId} stroke={STRATEGY_COLORS[model.modelId] ?? "#a7bad6"} strokeWidth={2} dot={{ r: 3, fill: STRATEGY_COLORS[model.modelId] ?? "#a7bad6" }} activeDot={{ r: 5 }}/>) }
+            </RechartsLineChart></ResponsiveContainer></div>
+          </section> : null}
+        </div>
+        <div className="trade-log-head"><div><span className="mini">{selectedStrategy?.label ?? "Model simulation"}</span><h4>Recent trades</h4></div><span>{selectedStrategy?.trades.length ?? 0} logged</span></div>
+        {selectedStrategy?.trades.length ? <div className="comparison-scroll"><div className="trade-log-table" role="table" aria-label={`${selectedStrategy.label} recent trades`}>
+          <div className="trade-log-row trade-log-labels" role="row"><span role="columnheader">Side</span><span role="columnheader">Entry</span><span role="columnheader">Exit</span><span role="columnheader">Exit reason</span><span role="columnheader">Hold</span><span role="columnheader">Net P&L</span></div>
+          {[...selectedStrategy.trades].slice(-12).reverse().map(trade => <div className="trade-log-row" role="row" key={`${selectedStrategy.modelId}-${trade.tradeNumber}`}><b className={trade.side === "LONG" ? "up" : "down"} role="rowheader">{trade.side}</b><span>{trade.entryTime.replace("T", " ").slice(0, 16)} · {currency(trade.entryPrice, 2)}</span><span>{trade.exitTime.replace("T", " ").slice(0, 16)} · {currency(trade.exitPrice, 2)}</span><span>{trade.exitReason.replaceAll("_", " ")}</span><span>{trade.holdingBars} bars</span><span className={trade.netReturn >= 0 ? "up" : "down"}>{percent(trade.netReturn, true)}</span></div>)}
+        </div></div> : <div className="comparison-empty">No trades for this model on the holdout.</div>}
+      </div> : null}
+      {walkForward ? <div className="walk-forward-block">
+        <div className="comparison-title"><div><span className="mini">Chronological robustness check</span><h4>Expanding walk-forward results</h4></div><span>{walkForward.foldCount} purged folds</span></div>
+        <p className="comparison-note">{walkForward.method.replaceAll("_", " ")}. Confidence gates are tuned on each fold’s validation slice, then measured on the next unseen test slice.</p>
+        <div className="comparison-scroll"><div className="strategy-table walk-forward-table" role="table" aria-label="Walk-forward baseline performance">
+          <div className="strategy-row strategy-labels" role="row"><span role="columnheader">Model</span><span role="columnheader">Folds</span><span role="columnheader">Net return</span><span role="columnheader">Profit factor</span><span role="columnheader">Max DD</span><span role="columnheader">Win rate</span><span role="columnheader">Trades</span></div>
+          {walkForward.aggregate.map(result => <div className="strategy-row" role="row" key={result.modelId}><b role="rowheader">{strategyResults.find(item => item.modelId === result.modelId)?.label ?? result.modelId}</b><span>{result.folds}</span><span className={result.netReturn >= 0 ? "up" : "down"}>{percent(result.netReturn, true)}</span><span>{result.profitFactor.toFixed(2)}</span><span>{percent(-result.maxDrawdown, true)}</span><span>{rate(result.winRate)}</span><span>{result.totalTrades.toLocaleString()}</span></div>)}
+        </div></div>
+        <div className="walk-forward-folds">
+          <span className="mini">Per-fold test results</span>
+          <div className="comparison-scroll"><div className="fold-table" role="table" aria-label="Individual walk-forward test folds">
+            <div className="fold-row fold-labels" role="row"><span role="columnheader">Model</span><span role="columnheader">Fold</span><span role="columnheader">Train</span><span role="columnheader">Validation</span><span role="columnheader">Test</span><span role="columnheader">Net return</span><span role="columnheader">PF</span><span role="columnheader">Max DD</span></div>
+            {walkForward.folds.flatMap(fold => fold.results.map(result => <div className="fold-row" role="row" key={`${result.modelId}-${fold.fold}`}><b role="rowheader">{strategyResults.find(item => item.modelId === result.modelId)?.label ?? result.modelId}</b><span>{fold.fold}</span><span>{fold.trainSamples.toLocaleString()}</span><span>{fold.validationSamples.toLocaleString()}</span><span>{fold.testSamples.toLocaleString()}</span><span className={(result.backtest.netReturn ?? 0) >= 0 ? "up" : "down"}>{percent(result.backtest.netReturn, true)}</span><span>{profitFactor(result.backtest.profitFactor)}</span><span>{percent(-(result.backtest.maxDrawdown ?? 0), true)}</span></div>))}
+          </div></div>
+        </div>
+      </div> : null}
+    </>}
+  </section>;
 }
 
 function ModelDecisionLedger({ analysis, loading, onOpenCharts }: { analysis?: ModelAnalysis; loading: boolean; onOpenCharts: () => void }) {
