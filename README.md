@@ -82,7 +82,6 @@ The lower branch is a separate offline comparison suite. It evaluates the neural
 
 One implementation detail is important for an accurate research description: although `QuantumPreprocessor` fits and saves a Qiskit feature-map component, the current trainer and live API pass **scaled PCA outputs** to the Trend and Structure networks. They do not pass the feature-map transform output into those networks. The separate supervised `QuantumMarketClassifier` is the quantum model used in the model-comparison experiment.
 
-The diagram describes the intended data flow. The separate quantum-classifier and classical-baseline experiments are part of the training/evaluation workflow; they are not all sequential stages in the live inference path.
 
 ## Repository layout
 
