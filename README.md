@@ -1,189 +1,203 @@
 # QuantGrad
 
-**A research-oriented market analysis platform combining multi-stream feature engineering, neural sequence models, quantum-model experiments, and a browser-based research terminal.**
+QuantGrad is a market-research platform built around a three-network neural inference pipeline and a separate model-comparison suite. It combines hourly exchange data, order-book context, market-structure features and macroeconomic inputs, then presents the resulting analysis in a local web terminal.
 
-QuantGrad is an experimental software project for studying how technical, market-structure, order-book, and macroeconomic information can be brought together in a common market-analysis pipeline. It includes a Python training and inference service, a React/TypeScript interface, and a set of model-comparison and backtesting experiments.
+The project is experimental research software. It does not connect to exchange accounts, place orders or provide investment advice. The performance figures written to a training report are outputs of the configured experiments, not evidence of dependable future returns.
 
-The repository is intended to support ongoing research and reproducible technical review. It is **not** a trading service, financial product, or evidence that any model can generate reliable returns.
+## At a glance
 
-## Project at a glance
-
-| Area | Implementation |
+| Component | Implementation |
 |---|---|
-| Market data | Binance spot OHLCV candles and order-book snapshots |
-| Feature engineering | 65 features organised into seven streams |
-| Sequence models | TensorFlow/Keras trend, structure, and entry classifiers |
-| Dimensionality reduction | Standard scaling and PCA |
-| Quantum experiments | Qiskit statevector-based feature processing and a separate variational classifier |
-| Classical comparisons | Random Forest, Histogram Gradient Boosting, and an out-of-fold tree stacker |
-| Evaluation | Chronological holdout, confidence-threshold selection, transaction-cost-aware simulation, and expanding-window walk-forward experiments |
-| Python service | FastAPI |
-| Web application | React 19, TypeScript, Vite, Express, and tRPC |
+| Market inputs | Binance Spot OHLCV candles and order-book depth |
+| Macro inputs | Yahoo Finance, FRED (optional key), Alternative.me and CoinGecko |
+| Feature matrix | 65 features across seven groups |
+| Sequence length | 60 hourly observations |
+| Main neural models | TensorFlow/Keras TrendModel, StructureModel and EntryModel |
+| Experimental comparators | Qiskit four-qubit variational classifier, Random Forest, Histogram Gradient Boosting and logistic-regression stacker |
+| Model service | Python, FastAPI |
+| Web application | React 19, TypeScript, Vite, Express and tRPC |
+| Evaluation | Chronological holdout, validation-selected confidence thresholds, ATR-based trade simulation and expanding-window tests for the classical baselines |
 
-## How the system is organised
+## Architecture
 
-The project has two cooperating services:
+QuantGrad has two runtime services. The Python service owns feature construction, model loading, inference and the local evaluation payload. The Node service provides the web application, public-market endpoints and a typed bridge to the Python API.
 
-1. **Python model service** — retrieves market inputs, constructs the feature matrix, loads trained artifacts, runs model inference, and returns the analysis payload.
-2. **Web application** — provides the research terminal and public-market context panels. Its server bridges requests to the local Python service when model analysis is requested.
+### Live inference
+
+The live prediction path consists of three separate neural networks. Trend and structure are predicted independently; their probability vectors then become inputs to the EntryModel alongside the original feature window.
 
 ```mermaid
-flowchart TD
-    A[Binance candles and order book] --> D[Python feature pipeline]
-    B[Macro data providers] --> D
-    D --> E[65 features · 7 streams]
-    E --> F[StandardScaler and PCA]
-    F --> G[Trend classifier]
-    F --> H[Market-structure classifier]
-    E --> I[Entry classifier]
-    G --> I
-    H --> I
-    G --> J[Signal fusion]
-    H --> J
-    I --> J
-    J --> K[FastAPI analysis response]
-    K --> L[Node / tRPC bridge]
-    M[Public market feeds] --> L
-    L --> N[React research terminal]
+flowchart TB
+    A[Binance hourly candles] --> F[65-feature construction]
+    B[Binance order-book snapshot] --> F
+    C[Macro and sentiment inputs] --> F
+    F --> R[Raw 60 × 65 feature window]
+    R --> P[StandardScaler + PCA]
+    P --> T[TrendModel]
+    P --> S[StructureModel]
+    T --> TP[3 trend probabilities]
+    S --> SP[6 structure probabilities]
+    R --> E[EntryModel]
+    TP --> E
+    SP --> E
+    E --> EP[5 entry probabilities]
+    TP --> X[Decision fusion]
+    SP --> X
+    EP --> X
+    D[ADX + order-book spread] --> X
+    X --> O[Signal, confidence and risk label]
+    O --> API[FastAPI response]
+    API --> BR[Node / tRPC model bridge]
+    BR --> UI[React research terminal]
 ```
 
-The diagram describes the intended data flow. The separate quantum-classifier and classical-baseline experiments are part of the training/evaluation workflow; they are not all sequential stages in the live inference path.
+| Network | Input | Architecture | Output |
+|---|---|---|---|
+| **TrendModel** | 60-step PCA-transformed sequence | Causal Conv1D blocks, stacked LSTMs, four-head self-attention, residual normalisation and global average pooling | 3 classes: uptrend, downtrend, ranging |
+| **StructureModel** | Same PCA-transformed sequence | Convolutional residual blocks, stacked LSTMs and a temporal attention gate | 6 classes: bullish/bearish market-structure shift, order block, fair-value gap, liquidity sweep and none |
+| **EntryModel** | Original 60 × 65 sequence, 3 trend probabilities and 6 structure probabilities | Seven parallel feature-stream branches; each uses Conv1D, a residual projection and an LSTM. A separate context branch processes the trend and structure probability vectors | 5 classes: strong buy, buy, hold, sell and strong sell |
+
+The EntryModel branches correspond to gradient, momentum, volume, structure, trend, technical and macro features. The final `fusion_decision()` function is a separate rule-based stage: it combines the three networks' probabilities with ADX and order-book spread to produce the displayed signal, confidence, trend, structure and risk label.
+
+### Offline model-comparison suite
+
+The trainer also evaluates models that do not form additional stages in the live inference chain.
+
+```mermaid
+flowchart LR
+    A[Last-step 65-feature snapshots] --> RF[Random Forest]
+    A --> HGB[Histogram Gradient Boosting]
+    RF --> PR[Out-of-fold probability features]
+    HGB --> PR
+    PR --> LR[Logistic-regression stacker]
+    A --> Q[4-qubit Qiskit VQC]
+    N[Three-network neural ensemble] --> E[Chronological holdout evaluation]
+    RF --> E
+    HGB --> E
+    LR --> E
+    Q --> E
+    E --> M[Classification and cost-aware trade metrics]
+    RF --> WF[Expanding-window walk-forward]
+    HGB --> WF
+    LR --> WF
+```
+
+- **QuantumMarketClassifier** is a supervised, four-qubit variational classifier. It reduces the tabular input to four PCA components and evaluates a Qiskit `Statevector` circuit for three-way directional classification.
+- **Random Forest** and **Histogram Gradient Boosting** are classical tabular baselines trained on the final feature row from each sequence window.
+- **Tree stacker** is a logistic-regression meta-model trained on expanding-window out-of-fold probability outputs from the two classical baselines.
+- **Neural ensemble** refers to TrendModel, StructureModel and EntryModel operating together. Its five entry probabilities are collapsed into down, flat and up probabilities for the three-class comparison.
+
+The chronological holdout comparison includes the neural ensemble, Qiskit classifier, both tree baselines and the stacker. The expanding-window walk-forward routine currently evaluates the Random Forest, Histogram Gradient Boosting and stacker; it does not run walk-forward folds for the neural or quantum model.
+
+#### The two quantum-related components are not interchangeable
+
+`QuantumPreprocessor` contains a PCA stage and an optional `QuantumFeatureMap`. The live TrendModel and StructureModel inference path uses the scaler and PCA output; it does not consume the feature-map output. In the checked-in training report, PCA retains 34 components, while the local statevector feature-map implementation has a 12-qubit limit. That configuration therefore uses the feature-map's classical fallback. The separate four-qubit `QuantumMarketClassifier` is the Qiskit statevector classifier used in the model-comparison suite.
+
+No experiment in this repository runs on quantum hardware, and the code does not establish a quantum advantage.
+
+## Feature engineering
+
+The feature builder combines seven groups into a 65-column matrix.
+
+| Group | Count | Included signals |
+|---|---:|---|
+| Gradient and price dynamics | 8 | Gradient, acceleration, jerk, persistence and normalised gradient |
+| Multi-scale momentum | 6 | 5/20/50-period ROC, alignment and divergence |
+| Volume and order flow | 8 | Volume delta and z-score, spikes, VWAP deviation, taker-buy ratio and order-book measures |
+| Market structure | 17 | Swing points, market-structure shifts, trend structure, order blocks, fair-value gaps, liquidity sweeps and premium/discount position |
+| Trend strength | 9 | ADX, directional indicators, EMA alignment, VWAP position and ADX slope |
+| Technical indicators | 7 | RSI, MACD, Bollinger measures, log return and mid-price normalisation |
+| Macro context | 10 | DXY, gold and crude correlations/momentum, Fear & Greed, BTC dominance, Fed rate and FOMC flag |
+| **Total** | **65** | |
+
+The model window contains 60 consecutive observations. The feature schema and stream boundaries are shared by training and inference; the EntryModel slices the raw 65-feature sequence by those boundaries.
+
+### Data sources
+
+The Python feature pipeline uses:
+
+- **Binance Spot:** hourly klines and a current order-book depth snapshot.
+- **Yahoo Finance:** DXY (`DX-Y.NYB`), gold futures (`GC=F`) and WTI crude futures (`CL=F`).
+- **FRED:** effective federal funds rate. A `FRED_API_KEY` is optional; the fetcher uses a documented fallback when it is absent or the request fails.
+- **Alternative.me:** Crypto Fear & Greed Index.
+- **CoinGecko:** BTC market dominance.
+
+Daily macro series are aligned to the hourly index by forward-filling. The macro fetcher stores its result in `backend/data/macro_cache.json` and warns when the cache is older than 24 hours. Provider failures can result in fallback values; the training report records some of those fallback states.
+
+The web application has its own public-data layer. It uses Binance Spot for quotes, movers and candles; Binance USDⓈ-M Futures for funding, open interest and account ratios; Hyperliquid for public market and wallet context; and Google News RSS for headlines. The web Macro page currently displays a curated FOMC event list rather than a live economic-data feed.
 
 ## Repository layout
 
-The runnable project is maintained in `QuantGrad_V5_Complete/`. The older top-level `backend/artifacts/` directory is a separate artifact snapshot; the supplied launch scripts and Python modules use `QuantGrad_V5_Complete/backend/artifacts/`.
+`QuantGrad_V5_Complete/` is the active application directory.
 
 ```text
 .
 ├── README.md
 ├── QuantGrad_V5_Complete/
 │   ├── backend/
-│   │   ├── artifacts/          # Trained models and preprocessing artifacts
-│   │   ├── data/               # Macro-data cache
-│   │   ├── feature_engine.py   # Market inputs and 65-feature construction
-│   │   ├── market_structure.py # Structure features and labels
-│   │   ├── macro_fetcher.py    # External macro-data collection
-│   │   ├── quantum_layer.py    # PCA and Qiskit-based experiments
-│   │   ├── trainer_v3.py       # Model training and evaluation orchestration
-│   │   ├── strategy_experiments.py
-│   │   ├── server.py           # FastAPI model API
-│   │   └── test_*.py           # Backend tests
+│   │   ├── artifacts/              # Model and preprocessing artifacts
+│   │   ├── data/                   # Macro cache
+│   │   ├── feature_engine.py       # Market data and 65-feature builder
+│   │   ├── market_structure.py     # Structure features and labels
+│   │   ├── macro_fetcher.py        # Macro and sentiment data collection
+│   │   ├── quantum_layer.py        # PCA, feature-map and VQC components
+│   │   ├── strategy_experiments.py # Labels, baselines and trade simulation
+│   │   ├── trainer_v3.py           # Model definitions and training workflow
+│   │   ├── server.py               # FastAPI inference service
+│   │   ├── dashboard.py            # Retained Streamlit dashboard
+│   │   └── test_*.py / verify.py    # Backend checks
 │   ├── frontend/
-│   │   ├── client/src/         # React application
-│   │   ├── server/             # Express, tRPC, public-data and model bridge
-│   │   ├── shared/             # Shared TypeScript types and model schemas
+│   │   ├── client/src/pages/Home.tsx
+│   │   ├── client/src/components/ui/ # Reusable Radix-based UI components
+│   │   ├── server/                  # Express, tRPC, public data and model bridge
+│   │   ├── shared/                  # Shared model-analysis types
 │   │   ├── package.json
 │   │   └── pnpm-lock.yaml
 │   ├── setup_windows.bat
-│   ├── run_backend.bat
+│   ├── run_backend.bat / .sh
 │   ├── run_frontend.bat
 │   └── train_quick.bat
-└── backend/
-    └── artifacts/              # Legacy/duplicate artifact snapshot
+└── backend/artifacts/               # Older artifact snapshot; not the active path
 ```
 
-## Feature design
+The repository also contains reusable UI primitives and template/scaffold modules. The current client entry point renders `App.tsx`, which wraps the QuantGrad `Home` page in an error boundary; the other template components are not separate application routes.
 
-The Python pipeline builds a 65-column feature matrix from seven groups. The feature contract is shared by training and inference.
+The older `backend/dashboard.py` Streamlit interface remains in the source tree, but the supplied V5 launch scripts start the FastAPI service and the React/tRPC application. The top-level `backend/artifacts/` directory is an older snapshot. Use `QuantGrad_V5_Complete/backend/artifacts/` for the current trainer and API.
 
-| Stream | Features | Examples |
-|---|---:|---|
-| Gradient and price dynamics | 8 | Gradient, acceleration, jerk, persistence |
-| Multi-scale momentum | 6 | ROC at multiple horizons, momentum alignment, divergence |
-| Volume and order flow | 8 | Volume z-score, VWAP deviation, taker-buy ratio, order-book measures |
-| Market structure | 17 | Swing points, market-structure shifts, order blocks, fair-value gaps, liquidity sweeps |
-| Trend strength | 9 | ADX, directional indicators, EMA alignment, VWAP position |
-| Technical indicators | 7 | RSI, MACD, Bollinger features, log return |
-| Macro context | 10 | DXY, gold and crude relationships, macro momentum, sentiment and policy inputs |
-| **Total** | **65** | |
-
-The model window is 60 time steps. The trend task uses three classes, the market-structure task uses six classes, and the entry task uses five signal classes.
-
-## Models and experiments
-
-### Neural sequence pipeline
-
-The live model path is built around three TensorFlow/Keras models:
-
-- **Trend model** — classifies the prevailing trend as uptrend, downtrend, or ranging.
-- **Structure model** — classifies market-structure events, including bullish/bearish shifts, order blocks, fair-value gaps, liquidity sweeps, and a no-event class.
-- **Entry model** — combines the feature sequence with the trend and structure probability outputs to produce a five-class entry signal.
-
-The trainer defines temporal convolution and recurrent components, attention mechanisms, residual connections, regularisation, and label smoothing. The model outputs are passed through a shared signal-fusion function.
-
-### Quantum and classical comparisons
-
-The research code also contains experiments beyond the three-model inference chain:
-
-- A PCA-based preprocessing path and a Qiskit statevector feature map.
-- A separate four-qubit variational quantum classifier for directional classification.
-- Random Forest and Histogram Gradient Boosting baselines.
-- A logistic-regression meta-model trained from expanding-window out-of-fold baseline probabilities.
-
-**Quantum terminology matters here:** the supplied quantum routines use local statevector simulation. The feature-map implementation can fall back to a deterministic classical transform when Qiskit is unavailable or the configured statevector limit is exceeded. This repository does not demonstrate execution on quantum hardware, nor does the presence of a quantum component establish a quantum advantage.
-
-### Evaluation
-
-The training and strategy code includes:
-
-- Chronological train, validation, and test partitions.
-- A purge interval around partition boundaries for the configured maximum holding period.
-- Validation-based confidence-threshold selection.
-- Classification measures such as accuracy, macro precision/recall/F1, balanced accuracy, and log loss.
-- Simulated strategy measures including net return, profit factor, win rate, drawdown, holding time, fees, and slippage.
-- Expanding-window walk-forward evaluation for the classical baselines and stacker.
-
-These are software evaluation procedures, not guarantees of out-of-sample performance. Reported values depend on the selected symbol, date range, data availability, labels, execution assumptions, and saved training artifacts. Results should be independently reproduced before being used in a paper.
-
-## Web application
-
-The browser application is organised around a set of research and market-context views:
-
-- **Terminal** — local model status, signal details, and model evidence.
-- **Discover** — public market movers and attributed news headlines.
-- **Charts** — exchange candles with candle, line, and Heikin–Ashi views.
-- **Strategy Lab** — a rule-specification workspace; it does not execute or backtest the displayed draft.
-- **Derivatives** — exchange-specific funding, open interest, and long/short account ratios.
-- **Macro** — an event calendar and market-news context.
-- **Flow** — public Hyperliquid market context and optional public-wallet position lookup.
-- **Integrations** — an optional Zapier Catch Hook test.
-
-The frontend obtains public market data from Binance and Hyperliquid, and headlines from a Google News RSS search feed. The Python pipeline separately uses Binance and macro-data providers including Yahoo Finance, FRED (optional API key), Alternative.me, and CoinGecko. Provider availability and fallback values can affect the resulting feature inputs.
-
-## Getting started
+## Running locally
 
 ### Requirements
 
-- Python **3.12** is the recommended version for the pinned TensorFlow/Python dependency set.
-- Node.js and npm.
-- pnpm **10.4.1** (the Windows launcher invokes this version through `npx`).
-- Internet access for public market and macro-data requests.
-- Sufficient memory and disk space for TensorFlow, model artifacts, and training. GPU acceleration is optional; the exact supported GPU setup depends on the local TensorFlow environment.
+- Python **3.12**.
+- Node.js compatible with Vite 7 (Node 20.19+ or 22.12+).
+- pnpm **10.4.1**, as pinned by the frontend package.
+- Internet access for market and macro data.
+- Enough memory and disk space for TensorFlow, training data and model artifacts.
 
 ### Windows
 
-Open PowerShell in the repository and move into the application directory:
+From PowerShell or Command Prompt:
 
 ```powershell
 cd .\QuantGrad_V5_Complete
 .\setup_windows.bat
 ```
 
-Start the Python service in the first terminal:
+Open two terminals in `QuantGrad_V5_Complete/`.
+
+**Terminal 1 — Python model API**
 
 ```powershell
 .\run_backend.bat
 ```
 
-Start the web application in a second terminal:
+**Terminal 2 — React application**
 
 ```powershell
 .\run_frontend.bat
 ```
 
-Then open [http://localhost:3000](http://localhost:3000).
-
-The Python service is available locally at [http://127.0.0.1:8000](http://127.0.0.1:8000). Its readiness endpoint is [http://127.0.0.1:8000/api/status](http://127.0.0.1:8000/api/status).
+The frontend normally starts at [http://localhost:3000](http://localhost:3000). If that port is occupied, the Node server checks the next available ports and prints the address it selected. The Python API listens at [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
 ### macOS and Linux
 
@@ -196,26 +210,44 @@ python -m pip install --upgrade pip
 python -m pip install -r backend/requirements.txt
 ```
 
-In one terminal, start the model API:
+Start the Python API in one terminal:
 
 ```bash
-cd backend
-python -m uvicorn server:app --host 127.0.0.1 --port 8000
+source .venv/bin/activate
+bash run_backend.sh
 ```
 
-In another terminal, install and start the web application:
+Start the frontend in a second terminal:
 
 ```bash
-cd QuantGrad_V5_Complete/frontend
+cd frontend
 corepack pnpm@10.4.1 install --frozen-lockfile
 corepack pnpm@10.4.1 dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). If your local Corepack setup does not provide the pinned pnpm version, install pnpm 10.4.1 using your preferred Node.js package-manager workflow.
+Open the frontend address printed by the Node process, normally [http://localhost:3000](http://localhost:3000).
 
-### Training
+### Optional environment settings
 
-The repository currently includes model and preprocessing artifacts under `QuantGrad_V5_Complete/backend/artifacts/`. A new training run is not normally required just to start the application.
+- `FRED_API_KEY` — improves the Fed Funds Rate input. Without it, the macro fetcher uses its configured fallback.
+- `QUANTGRAD_MODEL_API_URL` — set in the frontend environment if the Python API is not at `http://127.0.0.1:8000`.
+
+The public market pages do not require exchange API credentials. The optional Zapier integration accepts a user-supplied HTTPS Catch Hook URL for an explicit test event; the application does not persist that URL.
+
+## Training
+
+The checked-in inference artifacts are under `QuantGrad_V5_Complete/backend/artifacts/`. The API expects these six files:
+
+| Artifact | Purpose |
+|---|---|
+| `trend_model.keras` | Trend classifier |
+| `structure_model.keras` | Market-structure classifier |
+| `entry_model.keras` | Entry classifier |
+| `scaler.pkl` | StandardScaler fitted during training |
+| `pca.pkl` | PCA decomposition |
+| `quantum_params.pkl` | Quantum feature-map parameters and configuration |
+
+The repository also contains a training report, the best EntryModel weights checkpoint and a saved quantum comparison classifier. The trainer writes the Random Forest, Histogram Gradient Boosting and tree-stacker `.joblib` files locally; those files are ignored by Git.
 
 To run the small training configuration on Windows:
 
@@ -224,30 +256,43 @@ cd .\QuantGrad_V5_Complete
 .\train_quick.bat
 ```
 
-The launcher uses 1,500 hourly BTCUSDT bars and the trainer's quick configuration. Treat this as a pipeline smoke/quick-training run, not as a research-grade experiment or a basis for financial decisions.
+That launcher runs `trainer_v3.py --quick --bars 1500`. Quick mode uses five epochs and is intended as a pipeline check, not a final experiment.
 
-For a fuller run, use the trainer's command-line options from the backend directory:
+For a longer run, activate the Python environment and execute from the backend directory:
 
 ```bash
-python trainer_v3.py --bars 20000
+cd backend
+python trainer_v3.py --symbol BTCUSDT --bars 20000
 ```
 
-Training fetches external data and writes model/preprocessing outputs to `backend/artifacts/`. Record the symbol, interval, date range, data snapshot, parameters, dependency versions, and resulting artifact hashes when preparing publishable experiments.
+The trainer uses 60-step windows, fits preprocessing on the training portion, and creates chronological training, validation and test partitions with a 24-bar purge around the boundaries. The default full training configuration uses up to 60 epochs; quick mode uses five.
 
-## API
+To keep the existing neural models and run the comparison suite again:
+
+```bash
+python trainer_v3.py --symbol BTCUSDT --bars 20000 --compare-existing
+```
+
+This mode expects compatible neural and preprocessing artifacts to be present. It trains the small Qiskit comparator and the classical baselines, then updates the comparison sections of `training_report.json`.
+
+Training fetches data from external providers. For a research run, save the exact input data or a provider snapshot, symbol, interval, date range, label configuration, dependency versions, random seeds, training arguments and artifact hashes. The current repository does not provide a fully versioned historical market-data dataset.
+
+## API reference
 
 The Python FastAPI service exposes:
 
-| Method | Endpoint | Purpose |
+| Method | Endpoint | Description |
 |---|---|---|
-| GET | `/api/status` | Checks whether the expected model and preprocessing artifacts are present |
-| GET | `/api/analyze` | Fetches market context and runs the local inference pipeline |
+| GET | `/api/status` | Reports whether the six required inference artifact files exist |
+| GET | `/api/analyze` | Fetches market context, runs inference and returns signal, probability, candle, macro, rolling and evaluation data |
 
-The analysis endpoint accepts:
+`/api/analyze` accepts:
 
-- `symbol` — uppercase exchange symbol; defaults to `BTCUSDT`.
-- `bars` — number of hourly candles to request; defaults to 800.
-- `windows` — number of rolling windows used for the rolling evaluation payload; defaults to 260.
+| Parameter | Default | Range |
+|---|---:|---|
+| `symbol` | `BTCUSDT` | Uppercase exchange symbol, 5–16 characters |
+| `bars` | `800` | 300–2,000 hourly bars |
+| `windows` | `260` | 80–500 rolling windows |
 
 Example:
 
@@ -255,16 +300,35 @@ Example:
 http://127.0.0.1:8000/api/analyze?symbol=BTCUSDT&bars=800&windows=260
 ```
 
-The Node/tRPC application exposes the frontend's public-data and local-model bridge procedures. It is the browser application's primary entry point.
+The Node application exposes the browser-facing procedures under `/api/trpc`. Its `market` router provides overview, candles, movers, derivatives, Hyperliquid, public wallet, macro calendar, news and local-model analysis procedures. The model bridge checks `/api/status` before requesting `/api/analyze`, and reports an explicit unavailable state if the Python service or artifacts are missing.
 
-## Tests and checks
+The Python API's status endpoint checks filenames only. It does not validate model quality, artifact compatibility or successful deserialisation. Only load artifacts produced by a trusted QuantGrad training run.
 
-Run backend tests from `QuantGrad_V5_Complete/backend/`:
+## Web application
+
+The current React client contains eight views:
+
+- **Terminal** — spot-market overview, movers, model decision ledger and available model-performance results.
+- **Discover** — public market movers and attributed news headlines.
+- **Charts** — Binance candles with candle, line and Heikin-Ashi display modes.
+- **Strategy Lab** — a local rule composer for manual review. It does not run a backtest or place orders.
+- **Derivatives** — Binance USDⓈ-M Futures funding, mark price, open interest and global account ratios.
+- **Macro** — a curated FOMC calendar and recent market headlines.
+- **Flow** — Hyperliquid market context and positions visible at a supplied public wallet address.
+- **Integrations** — an explicit test event to a user-supplied Zapier Catch Hook.
+
+The chart surface is drawn in the client with SVG; Recharts is used for model-comparison and strategy-result visualisations. Public-data responses are cached briefly and carry source and availability information. The interface remains visible when a public feed or the local model service is unavailable.
+
+## Tests and validation
+
+Run the focused Python strategy tests from `QuantGrad_V5_Complete/backend/`:
 
 ```bash
-python -m unittest discover -s . -p "test_*.py" -v
-python verify.py
+python -m unittest test_strategy_experiments -v
+python test_fomc_smoke.py
 ```
+
+`test_analyze.py` is a live integration script: it calls the analysis endpoint directly and requires working model artifacts, internet access and the Python dependencies.
 
 Run frontend checks from `QuantGrad_V5_Complete/frontend/`:
 
@@ -274,40 +338,24 @@ pnpm test
 pnpm build
 ```
 
-The repository contains focused backend tests and frontend tests for selected model-bridge, presentation, and public-data behaviour. Passing these checks does not validate model performance or establish that a backtest is free of methodological bias.
+The frontend test suite covers the local-model bridge, public-data normalisation and validation, model presentation helpers, and logout behaviour. These tests exercise application contracts; they do not establish predictive performance or validate the trading simulation against live execution.
 
-## Research and reproducibility notes
+## Research notes and limitations
 
-QuantGrad is being developed as a research project. Before treating an experiment as a paper result, document at least:
+QuantGrad is a useful base for further experiments, but the current implementation should not be described as a leakage-free or fully reproducible trading study without additional work.
 
-1. **Research question and hypothesis** — define the claimed contribution before selecting metrics.
-2. **Data provenance** — provider, symbol, interval, collection timestamps, missing-data treatment, and any revisions.
-3. **Label construction** — thresholds, horizons, barrier definitions, and class balance.
-4. **Temporal protocol** — train/validation/test dates, purge or embargo rules, and walk-forward fold boundaries.
-5. **Baselines and ablations** — compare against appropriate non-quantum and simpler neural baselines under the same data and evaluation protocol.
-6. **Execution assumptions** — fees, slippage, fill timing, spread, position sizing, and treatment of overlapping trades.
-7. **Uncertainty** — repeated seeds where feasible, confidence intervals, sensitivity analysis, and statistical tests chosen before interpreting results.
-8. **Artifacts** — dependency lockfiles, configuration, raw-data identifiers or snapshots where licensing permits, model hashes, and complete result files.
+- **Point-in-time features need an audit.** The feature code uses `numpy.gradient` for price derivatives and future-window comparisons in swing-point detection. The order-block detector also confirms a pattern using later candles before assigning its active interval. These operations can make information from later observations available at earlier timestamps. They should be made causal or shifted to the time they become observable, followed by a complete retraining and re-evaluation, before making out-of-sample claims.
+- **The purge does not remove feature leakage.** The trainer applies a 24-bar purge between chronological partitions to account for the configured maximum holding period. That is useful for overlapping labels, but it cannot correct features that already contain future information.
+- **Walk-forward coverage is partial.** The current expanding-window routine covers the classical baselines and their stacker, not the neural ensemble or Qiskit classifier.
+- **Backtests are simplified.** The variable-exit simulator models next-open entries, ATR stop/target levels, model HOLD/reversal exits, a maximum holding period, fees and slippage. It does not model every aspect of spread, market impact, partial fills, exchange outages or funding payments.
+- **Data and training are not fully pinned.** Market data is fetched from external providers, some Python dependencies are not version-pinned, and the trainer does not establish a complete deterministic seed/configuration record for every model.
+- **Fallback macro inputs matter.** A run with provider fallback values is not directly comparable to a run with complete live macro series. Check `macro_status` in the training report.
+- **Quantum simulation is local.** The comparison classifier uses Qiskit Statevector simulation. The preprocessor's feature-map path can fall back to a classical transform and is not part of the live neural inference input.
+- **No order execution exists.** Strategy Lab is a specification interface; the other market views are informational. No exchange credentials or trading endpoints are used.
+- **Licensing is not settled at repository level.** The frontend package declares an MIT package license, but the repository does not contain a root-level LICENSE file.
 
-In particular, a fair quantum-versus-classical comparison requires matched data splits, comparable tuning budgets, transparent simulator settings, and a clear statement of what is quantum and what remains classical.
-
-## Limitations and responsible use
-
-- QuantGrad is a research prototype. It is not financial advice and does not place orders.
-- Market and macro feeds are external dependencies; outages, rate limits, revised data, and fallback values can change the inputs.
-- The live Python inference route expects compatible trained artifacts. The presence of files is a readiness check, not proof that those artifacts are scientifically valid or compatible with every environment.
-- The current code includes local statevector simulation and a classical fallback path; it does not use a quantum processor.
-- Backtests are simulations under code-defined assumptions. They do not model every aspect of market impact, liquidity, exchange outages, or real execution.
-- The repository does not currently include a root-level license file. Reuse and redistribution terms should be clarified before external adoption.
-
-## Contributing
-
-Changes to the model, feature definitions, labels, evaluation protocol, or artifact format should be accompanied by tests and a description of their effect on reproducibility. Keep experimental outputs separate from source code, avoid committing credentials, and do not present unverified performance claims as established results.
+For a paper, report the exact model and data version, target definition, time boundaries, purge policy, threshold-selection procedure, execution assumptions, macro-source status and artifact hashes. Compare the quantum model with appropriately tuned classical baselines under the same splits and comparable tuning budgets. Do not interpret a single quick-training report as evidence of generalisable performance.
 
 ## Citation
 
-A formal citation should be added when the associated paper has a stable title, author list, version, and public DOI or repository release. Until then, cite the specific repository revision used in an experiment and include its commit hash in the paper's methods or supplementary material.
-
----
-
-*QuantGrad — research software for studying multi-source market representation, model comparison, and evaluation.*
+When the research paper has a stable title, author list and public identifier, add its formal citation here. Until then, cite the exact repository revision and include the commit hash used to generate each experiment.
