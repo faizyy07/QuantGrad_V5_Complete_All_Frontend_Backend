@@ -14,7 +14,7 @@ The repository is intended to support ongoing research and reproducible technica
 | Feature engineering | 65 features organised into seven streams |
 | Sequence models | TensorFlow/Keras trend, structure, and entry classifiers |
 | Dimensionality reduction | Standard scaling and PCA |
-| Quantum experiments | Qiskit statevector-based feature processing and a separate variational classifier |
+| Quantum experiments | Saved statevector feature-map experiment plus a separate supervised 4-qubit Qiskit variational classifier |
 | Classical comparisons | Random Forest, Histogram Gradient Boosting, and an out-of-fold tree stacker |
 | Evaluation | Chronological holdout, confidence-threshold selection, transaction-cost-aware simulation, and expanding-window walk-forward experiments |
 | Python service | FastAPI |
@@ -28,24 +28,59 @@ The project has two cooperating services:
 2. **Web application** — provides the research terminal and public-market context panels. Its server bridges requests to the local Python service when model analysis is requested.
 
 ```mermaid
-flowchart TD
-    A[Binance candles and order book] --> D[Python feature pipeline]
-    B[Macro data providers] --> D
-    D --> E[65 features · 7 streams]
-    E --> F[StandardScaler and PCA]
-    F --> G[Trend classifier]
-    F --> H[Market-structure classifier]
-    E --> I[Entry classifier]
-    G --> I
-    H --> I
-    G --> J[Signal fusion]
-    H --> J
-    I --> J
-    J --> K[FastAPI analysis response]
-    K --> L[Node / tRPC bridge]
-    M[Public market feeds] --> L
-    L --> N[React research terminal]
+flowchart TB
+    A[Binance OHLCV candles] --> C[Feature engineering]
+    B[Order-book snapshot] --> C
+    D[Macro and sentiment sources] --> C
+    C --> E[65 features · 7 streams]
+    E --> F[60-step windows]
+
+    subgraph LIVE["Live neural inference path"]
+      F --> G[StandardScaler + PCA]
+      G --> H[Trend CNN–LSTM–attention model]
+      G --> I[Structure CNN–LSTM–temporal attention model]
+      F --> J[Entry model: seven feature-stream branches]
+      H --> K[Trend probabilities · 3 classes]
+      I --> L[Structure probabilities · 6 classes]
+      K --> J
+      L --> J
+      J --> M[Entry probabilities · 5 classes]
+      K --> N[Signal and risk fusion]
+      L --> N
+      M --> N
+      O[ADX and order-book spread] --> N
+      N --> P[Final signal + risk label]
+    end
+
+    subgraph EXP["Offline model-comparison experiments"]
+      Q[Last-step feature snapshots] --> R[Random Forest]
+      Q --> S[Histogram Gradient Boosting]
+      R --> T[Probability features]
+      S --> T
+      T --> U[Logistic-regression OOF stacker]
+      Q --> V[Separate 4-qubit Qiskit VQC]
+      M --> W[Neural ensemble comparator]
+      R --> X[Holdout strategy evaluation]
+      S --> X
+      U --> X
+      V --> X
+      W --> X
+      X --> Y[Classification + cost-aware backtest metrics]
+      R --> Z[Expanding-window walk-forward]
+      S --> Z
+      U --> Z
+    end
+
+    subgraph QEXP["Quantum preprocessing experiment"]
+      G -. separate saved feature-map parameters .-> AA[Qiskit statevector feature-map experiment]
+    end
 ```
+
+**How to read this architecture:** the live inference path is a three-network neural ensemble, not a single model. Trend and structure predictions are generated independently from the PCA-transformed sequence. The Entry model receives the original 65-feature sequence plus both probability vectors, then the fusion function combines all three outputs with ADX and spread information.
+
+The lower branch is a separate offline comparison suite. It evaluates the neural ensemble against a supervised four-qubit Qiskit variational classifier, Random Forest, Histogram Gradient Boosting, and a logistic-regression stacker trained on expanding-window out-of-fold probabilities. The walk-forward routine is applied to the classical baselines and stacker.
+
+One implementation detail is important for an accurate research description: although `QuantumPreprocessor` fits and saves a Qiskit feature-map component, the current trainer and live API pass **scaled PCA outputs** to the Trend and Structure networks. They do not pass the feature-map transform output into those networks. The separate supervised `QuantumMarketClassifier` is the quantum model used in the model-comparison experiment.
 
 The diagram describes the intended data flow. The separate quantum-classifier and classical-baseline experiments are part of the training/evaluation workflow; they are not all sequential stages in the live inference path.
 
@@ -101,26 +136,42 @@ The model window is 60 time steps. The trend task uses three classes, the market
 
 ## Models and experiments
 
-### Neural sequence pipeline
+### Live neural ensemble
 
-The live model path is built around three TensorFlow/Keras models:
+The production inference route loads and runs **three distinct TensorFlow/Keras networks**. They are trained as separate models, then connected through their probability outputs.
 
-- **Trend model** — classifies the prevailing trend as uptrend, downtrend, or ranging.
-- **Structure model** — classifies market-structure events, including bullish/bearish shifts, order blocks, fair-value gaps, liquidity sweeps, and a no-event class.
-- **Entry model** — combines the feature sequence with the trend and structure probability outputs to produce a five-class entry signal.
+| Model | Input | Architecture in the implementation | Output |
+|---|---|---|---|
+| **TrendModel** | 60-step PCA-transformed feature sequence | Causal Conv1D blocks, stacked LSTMs, four-head self-attention, residual normalisation and dense classification head | 3 classes: uptrend, downtrend, ranging |
+| **StructureModel** | Same PCA-transformed sequence | Causal convolutional residual blocks, stacked LSTMs, temporal attention gate and dense classification head | 6 classes: bullish/bearish MSS, order block, fair-value gap, liquidity sweep, none |
+| **EntryModel** | Original 65-feature sequence plus TrendModel and StructureModel probability vectors | Seven parallel feature-stream branches; each branch uses Conv1D, a residual projection and an LSTM. The trend and structure probabilities form an additional context branch | 5 classes: strong buy, buy, hold, sell, strong sell |
 
-The trainer defines temporal convolution and recurrent components, attention mechanisms, residual connections, regularisation, and label smoothing. The model outputs are passed through a shared signal-fusion function.
+The seven EntryModel branches correspond to gradient, momentum, volume, structure, trend, technical and macro features. The EntryModel does not simply consume the two predicted labels: it receives their full probability vectors and learns from them alongside the raw feature sequence.
 
-### Quantum and classical comparisons
+The final `fusion_decision` function combines the Entry, Trend and Structure probabilities with ADX and order-book spread to produce the displayed signal and risk label. This final rule-based fusion step is distinct from the neural networks themselves.
 
-The research code also contains experiments beyond the three-model inference chain:
+### Separate model-comparison suite
 
-- A PCA-based preprocessing path and a Qiskit statevector feature map.
-- A separate four-qubit variational quantum classifier for directional classification.
-- Random Forest and Histogram Gradient Boosting baselines.
-- A logistic-regression meta-model trained from expanding-window out-of-fold baseline probabilities.
+The trainer also builds an offline comparison suite. These models are **not** additional stages in the live three-network inference chain.
 
-**Quantum terminology matters here:** the supplied quantum routines use local statevector simulation. The feature-map implementation can fall back to a deterministic classical transform when Qiskit is unavailable or the configured statevector limit is exceeded. This repository does not demonstrate execution on quantum hardware, nor does the presence of a quantum component establish a quantum advantage.
+| Comparator | Model family | Role in the experiment |
+|---|---|---|
+| **QuantumMarketClassifier** | Supervised 4-qubit variational quantum classifier using Qiskit Statevector | Three-class directional prediction |
+| **Random Forest** | Bagged decision trees | Classical tabular baseline |
+| **Histogram Gradient Boosting** | Gradient-boosted decision trees | Classical tabular baseline |
+| **Tree stacker** | Logistic regression | Learns from expanding-window out-of-fold probability outputs of Random Forest and Histogram Gradient Boosting |
+| **Neural ensemble** | TrendModel + StructureModel + EntryModel | Reference model for comparison |
+
+The classical models and stacker are trained on aligned tabular feature snapshots. The stacker is trained on out-of-fold probability features; it is not a fourth neural network and it does not replace the EntryModel in the live API. The comparison routine selects confidence thresholds on validation data, then evaluates the selected signals on the chronological holdout. The classical baselines and stacker are also included in the expanding-window walk-forward routine.
+
+### Quantum components: an important distinction
+
+There are two different quantum-related components in the code:
+
+1. **QuantumPreprocessor / QuantumFeatureMap** — fits a scaler and PCA decomposition, then fits and saves a Qiskit statevector feature-map component when the local simulator is available and within the configured qubit limit. In the current trainer and API inference path, the TrendModel and StructureModel inputs are produced using the scaler and PCA decomposition; the feature-map output is not used as their model input.
+2. **QuantumMarketClassifier** — a separate supervised four-qubit variational classifier trained and evaluated by the offline comparison suite. This is the Qiskit model directly compared with the neural ensemble and classical baselines.
+
+The Qiskit routines use local statevector simulation, not quantum hardware. The feature-map code has a deterministic classical fallback when Qiskit is unavailable or the configured statevector limit is exceeded. No quantum advantage is established by the presence of these components.
 
 ### Evaluation
 
